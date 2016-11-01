@@ -1,0 +1,82 @@
+digraph seqlab { // auto-generated HCL2 visualization via graphviz
+    node [ fontname="sans-serif" ];
+    rankdir=BT;
+    ///////////////////////// builtin components ////////////////////////
+
+    _regfile [shape="record" label="{<reg_outputA>reg_outputA|<reg_srcA>reg_srcA}|{<reg_outputB>reg_outputB|<reg_srcB>reg_srcB}|{|{<reg_dstE>reg_dstE|<reg_inputE>reg_inputE}}|{|{<reg_dstM>reg_dstM|<reg_inputM>reg_inputM}}" style="filled" fillcolor="#aaffff"];
+    _datamem [shape="record" label="{<mem_output>mem_output|{<mem_readbit>mem_readbit|<mem_addr>mem_addr}}|{|{<mem_writebit>mem_writebit|<mem_input>mem_input}}" style="filled" fillcolor="#aaffff"];
+    _instmem [shape="record" label="{<i10bytes>i10bytes|<pc>pc}" style="filled" fillcolor="#aaffff"];
+    _status [shape="record" label="{|<Stat>Stat}" style="filled" fillcolor="#aaffff"];
+
+    //////////////////////////// user code //////////////////////////////
+
+_reg_P [shape="record" label="{|{<bubble_P>bubble_P|<stall_P>stall_P}}|{<P_pc>P_pc|<p_pc>p_pc}"];
+_reg_C [shape="record" label="{|{<bubble_C>bubble_C|<stall_C>stall_C}}|{<C_SF>C_SF|<c_SF>c_SF}|{<C_ZF>C_ZF|<c_ZF>c_ZF}"];
+    _reg_P:P_pc -> _instmem:pc;
+    icode -> _reg_C:stall_C;
+    valE -> _reg_C:c_ZF;
+    valE -> _reg_C:c_SF;
+    _instmem:i10bytes -> opcode;
+    _instmem:i10bytes -> ifun;
+    opcode -> icode;
+    _op_rB [shape="none" label="28-31"];
+    _op_rB -> rB;
+    _instmem:i10bytes -> _op_rB;
+    icode -> _op_rB [style=dotted];
+    _op_rA [shape="none" label="33-36"];
+    _op_rA -> rA;
+    _instmem:i10bytes -> _op_rA;
+    icode -> _op_rA [style=dotted];
+    _op_valC [shape="none" label="40-43"];
+    _op_valC -> valC;
+    _instmem:i10bytes -> _op_valC;
+    icode -> _op_valC [style=dotted];
+    _op_Stat [shape="none" label="51-55"];
+    _op_Stat -> _status:Stat;
+    icode -> _op_Stat [style=dotted];
+    _op_conditionsMet [shape="none" label="57-66"];
+    _op_conditionsMet -> conditionsMet;
+    _reg_C:C_SF -> _op_conditionsMet;
+    _reg_C:C_ZF -> _op_conditionsMet;
+    ifun -> _op_conditionsMet [style=dotted];
+    _op_reg_inputE [shape="none" label="70-79"];
+    _op_reg_inputE -> _regfile:reg_inputE;
+    valC -> _op_reg_inputE;
+    _regfile:reg_outputA -> _op_reg_inputE;
+    _regfile:reg_outputB -> _op_reg_inputE;
+    icode -> _op_reg_inputE [style=dotted];
+    ifun -> _op_reg_inputE [style=dotted];
+    _regfile:reg_inputE -> valE;
+    _op_reg_dstE [shape="none" label="83-87"];
+    _op_reg_dstE -> _regfile:reg_dstE;
+    rB -> _op_reg_dstE;
+    conditionsMet -> _op_reg_dstE [style=dotted];
+    icode -> _op_reg_dstE [style=dotted];
+    _op_reg_srcA [shape="none" label="89-93"];
+    _op_reg_srcA -> _regfile:reg_srcA;
+    rA -> _op_reg_srcA;
+    icode -> _op_reg_srcA [style=dotted];
+    _op_reg_srcB [shape="none" label="95-98"];
+    _op_reg_srcB -> _regfile:reg_srcB;
+    rB -> _op_reg_srcB;
+    icode -> _op_reg_srcB [style=dotted];
+    _op_mem_readbit [shape="none" label="100-104"];
+    _op_mem_readbit -> _datamem:mem_readbit;
+    icode -> _op_mem_readbit [style=dotted];
+    _op_mem_writebit [shape="none" label="106-110"];
+    _op_mem_writebit -> _datamem:mem_writebit;
+    icode -> _op_mem_writebit [style=dotted];
+    _regfile:reg_outputA -> _datamem:mem_input;
+    valE -> _datamem:mem_addr;
+    _op_increment [shape="none" label="117-123"];
+    _op_increment -> increment;
+    icode -> _op_increment [style=dotted];
+    _op_p_pc [shape="none" label="124-127"];
+    _op_p_pc -> _reg_P:p_pc;
+    valC -> _op_p_pc;
+    _reg_P:P_pc -> _op_p_pc;
+    increment -> _op_p_pc;
+    icode -> _op_p_pc [style=dotted];
+    conditionsMet -> _op_p_pc [style=dotted];
+
+}

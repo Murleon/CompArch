@@ -1,0 +1,126 @@
+/*Neha Telhan (nt7ab) */
+
+register pP {  
+    # our own internal register. P_pc is its output, p_pc is its input.
+	pc:64 = 0; # 64-bits wide; 0 is its default value.	
+}
+
+register cC {
+    SF:1 = 0;
+    ZF:1 = 0;
+}
+
+pc = P_pc;
+
+stall_C = (icode != OPQ);
+c_ZF = (valE == 0);
+c_SF = (valE >= 0x8000000000000000);
+
+
+# we can define our own input/output "wires" of any number of 0<bits<=80
+wire opcode:8, icode:4, ifun:4, rB:4, rA:4, valC:64, valE:64, increment:64;
+wire conditionsMet:1; 
+
+opcode = i10bytes[0..8];   # first byte read from instruction memory
+ifun = i10bytes[0..4];
+icode = opcode[4..8];      # top nibble of that byte
+rB = [
+   icode == JXX : REG_NONE;
+   1: 	    	: i10bytes[8..12];
+];
+
+rA = [
+   icode == JXX: REG_NONE;
+   1	       : i10bytes[12..16];
+];
+
+#valC = i10bytes[16..80]; #the immediate value
+
+valC = [
+     icode == JXX : i10bytes[8..72];
+     1 	      	  : i10bytes[16..80];
+];
+
+
+# named constants can help make code readable
+const TOO_BIG = 0xC; # the first unused icode in Y86-64
+
+# Stat is a built-in output; STAT_HLT means "stop", STAT_AOK means 
+# "continue".  The following uses the mux syntax described in the textbook
+Stat = [
+	icode == HALT : STAT_HLT;
+	icode > 0xb   : STAT_INS;
+	1             : STAT_AOK;
+];
+
+conditionsMet = [
+	      ifun == ALWAYS : true;
+	      ifun == LE : C_SF || C_ZF;
+	      ifun == LT : C_SF;
+	      ifun == EQ : C_ZF;
+	      ifun == NE : !C_ZF;
+	      ifun == GE : !C_SF;
+	      ifun == GT : !C_SF && !C_ZF;
+	      1	      	 : FALSE;  
+];
+
+# let's also increment a register in the register file; to do that we
+# first pick a register to read
+reg_inputE = [
+	   icode == IRMOVQ: valC;
+	   icode == RRMOVQ: reg_outputA;
+	   icode == OPQ && ifun == XORQ : reg_outputA ^ reg_outputB;
+	   icode == OPQ && ifun == ADDQ : reg_outputA + reg_outputB;
+	   icode == OPQ && ifun == SUBQ : reg_outputB - reg_outputA;
+	   icode == OPQ && ifun == ANDQ : reg_outputA & reg_outputB;
+	   icode == RMMOVQ : reg_outputB + valC; #Memory Address
+	   1: REG_NONE;
+];
+
+valE = reg_inputE;
+
+reg_dstE = [
+	 !conditionsMet && icode == CMOVXX : REG_NONE;
+	 (icode in {IRMOVQ, RRMOVQ, OPQ}): rB;	
+	 1 : REG_NONE;
+];
+
+reg_srcA = [
+	 (icode in {RRMOVQ, OPQ, RMMOVQ}): rA;
+	 (icode in {JXX}) : REG_NONE;
+	 1	   	  : REG_NONE;
+];
+
+reg_srcB = [
+	 (icode in {RRMOVQ, OPQ, RMMOVQ}): rB;
+	 1 : REG_NONE;
+];
+
+mem_readbit = [
+	    icode == RMMOVQ: 0;
+	    icode == MRMOVQ: 1;
+	    1 	     	   : REG_NONE;
+];
+
+mem_writebit = [
+	    icode == RMMOVQ : 1;
+	    icode == MRMOVQ : 0;
+	    1	     	    : REG_NONE;
+];
+
+mem_input = reg_outputA;
+
+mem_addr = valE;
+
+# to make progress, we have to update the PC...
+increment = [
+          (icode in {HALT, NOP, RET}) : 1;
+          (icode in {RRMOVQ, OPQ, CMOVXX, PUSHQ, POPQ}) : 2;
+          (icode in {IRMOVQ, RMMOVQ, MRMOVQ}) : 10;
+          (icode in {CALL, JXX}) : 9;
+          1             : 10;
+];
+p_pc = [
+     icode == JXX && conditionsMet : valC;
+     1	      	  :P_pc + increment;
+]; 

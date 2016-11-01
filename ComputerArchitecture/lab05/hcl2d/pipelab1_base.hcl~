@@ -1,0 +1,87 @@
+########## the PC and condition codes registers #############
+register xF { pc:64 = 0; }
+
+register dW {
+    icode:4 = NOP;
+    valC:64  = 0;
+    reg_outputA:64 = 0;
+    rA:4 = REG_NONE;
+    rB:4 = REG_NONE;
+    rvalA:64 = 0;
+    reg_dstE:4 = 0;
+    Stat:3 = 0;
+}
+
+########## Fetch #############
+pc = F_pc;
+
+wire ifun:4, rA:4, rB:4;
+
+d_icode = i10bytes[4..8];
+ifun = i10bytes[0..4];
+d_rA = i10bytes[12..16];
+d_rB = i10bytes[8..12];
+
+d_valC = [
+	d_icode in { JXX } : i10bytes[8..72];
+	1 : i10bytes[16..80];
+];
+
+wire offset:64, valP:64;
+offset = [
+	d_icode in { HALT, NOP, RET } : 1;
+	d_icode in { RRMOVQ, OPQ, PUSHQ, POPQ } : 2;
+	d_icode in { JXX, CALL } : 9;
+	1 : 10;
+];
+valP = F_pc + offset;
+
+
+########## Decode #############
+
+# source selection
+reg_srcA = [
+	d_icode in {RRMOVQ} : d_rA;
+	1 : REG_NONE;
+];
+
+# in execute and later phases, used W_rvalA instead of reg_outputA
+d_rvalA = d_reg_outputA;
+
+
+########## Execute #############
+
+
+
+########## Memory #############
+
+
+
+
+########## Writeback #############
+# destination selection
+d_reg_dstE = [
+	W_icode in {IRMOVQ, RRMOVQ} : W_rB;
+	1 : REG_NONE;
+];
+
+reg_dstE = W_dstE;
+
+reg_inputE = [ # unlike book, we handle the "forwarding" actions (something + 0) here
+	W_icode == RRMOVQ : W_reg_outputA;
+	W_icode in {IRMOVQ} : W_valC;
+];
+
+########## PC and Status updates #############
+d_Stat = Stat;
+Stat = [
+	d_icode == HALT : STAT_HLT;
+	d_icode > 0xb : STAT_INS;
+	1 : STAT_AOK;
+];
+Stat = W_Stat;
+
+x_pc = valP;
+
+
+
