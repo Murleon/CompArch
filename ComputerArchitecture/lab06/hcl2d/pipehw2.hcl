@@ -28,11 +28,12 @@ f_stat = [
 wire offset:64;#, f_valP:64;
 offset = [
        f_icode in { HALT, NOP, RET } : 1;
-       f_icode in { RRMOVQ, OPQ, PUSHQ, POPQ } : 2;
+       f_icode in { RRMOVQ, OPQ, PUSHQ, POPQ, CMOVXX } : 2;
        f_icode in { JXX, CALL } : 9;
        1 : 10;
 ];
 f_valP = F_pc + offset;
+
 x_pc = f_valP;
 
 #icode = f_icode;
@@ -78,7 +79,9 @@ d_dstM = [
 d_valA = [
        reg_srcA == REG_NONE: 0;
        reg_srcA == e_dstE : e_valE;
+       reg_srcA == m_dstE : m_valE;
        reg_srcA == m_dstM : m_valM; # forward post-memory
+       reg_srcA == W_dstE : W_valE;
        reg_srcA == W_dstM : W_valM; # forward pre-writeback
        1 : reg_outputA; # returned by register file based on reg_srcA
 ];
@@ -97,6 +100,7 @@ d_icode = D_icode;
 d_ifun = D_ifun;
 d_valC = D_valC;
 
+
 ########## Execute #############
 
 register dE {
@@ -113,6 +117,8 @@ register dE {
 
 e_valE = [
        E_icode in { RMMOVQ, MRMOVQ } : E_valC + E_valB;
+       E_icode in { IRMOVQ} : E_valC;
+       E_icode in { RRMOVQ} : E_valA;
        1 : 0;
 ];
 
@@ -121,7 +127,6 @@ e_dstE = E_dstE;
 e_dstM = E_dstM;
 e_icode = E_icode;
 e_valA = E_valA;
-
 
 ########## Memory #############
 
@@ -148,7 +153,7 @@ m_valM = mem_output; # input from mem_readbit and mem_addr
 m_dstE = M_dstE;
 m_dstM = M_dstM;
 m_icode = M_icode;
-m_valE = M_valA;
+m_valE = M_valE;
 
 ########## Writeback #############
 register mW {

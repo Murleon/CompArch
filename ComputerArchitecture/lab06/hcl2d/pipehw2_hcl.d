@@ -75,11 +75,12 @@ f_stat = [
 wire offset:64;#, f_valP:64;
 offset = [
        f_icode in { HALT, NOP, RET } : 1;
-       f_icode in { RRMOVQ, OPQ, PUSHQ, POPQ } : 2;
+       f_icode in { RRMOVQ, OPQ, PUSHQ, POPQ, CMOVXX } : 2;
        f_icode in { JXX, CALL } : 9;
        1 : 10;
 ];
 f_valP = F_pc + offset;
+
 x_pc = f_valP;
 
 #icode = f_icode;
@@ -125,7 +126,9 @@ d_dstM = [
 d_valA = [
        reg_srcA == REG_NONE: 0;
        reg_srcA == e_dstE : e_valE;
+       reg_srcA == m_dstE : m_valE;
        reg_srcA == m_dstM : m_valM; # forward post-memory
+       reg_srcA == W_dstE : W_valE;
        reg_srcA == W_dstM : W_valM; # forward pre-writeback
        1 : reg_outputA; # returned by register file based on reg_srcA
 ];
@@ -144,6 +147,7 @@ d_icode = D_icode;
 d_ifun = D_ifun;
 d_valC = D_valC;
 
+
 ########## Execute #############
 
 register dE {
@@ -160,6 +164,8 @@ register dE {
 
 e_valE = [
        E_icode in { RMMOVQ, MRMOVQ } : E_valC + E_valB;
+       E_icode in { IRMOVQ} : E_valC;
+       E_icode in { RRMOVQ} : E_valA;
        1 : 0;
 ];
 
@@ -168,7 +174,6 @@ e_dstE = E_dstE;
 e_dstM = E_dstM;
 e_icode = E_icode;
 e_valA = E_valA;
-
 
 ########## Memory #############
 
@@ -195,7 +200,7 @@ m_valM = mem_output; # input from mem_readbit and mem_addr
 m_dstE = M_dstE;
 m_dstM = M_dstM;
 m_icode = M_icode;
-m_valE = M_valA;
+m_valE = M_valE;
 
 ########## Writeback #############
 register mW {
@@ -661,6 +666,8 @@ int tick(bool showpc=true, bool showall=false) {
     _HCL_d_valC &= 0xffffffffffffffff;
     if (showall) writefln("set d_valC to 0x%x",_HCL_d_valC);
     ulong _HCL_e_valE = (((((_HCL_E_icode)==(4)))||(((_HCL_E_icode)==(5)))) ? ((_HCL_E_valC)+(_HCL_E_valB)) :
+		(((_HCL_E_icode)==(3))) ? (_HCL_E_valC) :
+		(((_HCL_E_icode)==(2))) ? (_HCL_E_valA) :
 		(0UL));
     _HCL_e_valE &= 0xffffffffffffffff;
     if (showall) writefln("set e_valE to 0x%x",_HCL_e_valE);
@@ -704,7 +711,7 @@ int tick(bool showpc=true, bool showall=false) {
     ulong _HCL_m_icode = _HCL_M_icode;
     _HCL_m_icode &= 0xf;
     if (showall) writefln("set m_icode to 0x%x",_HCL_m_icode);
-    ulong _HCL_m_valE = _HCL_M_valA;
+    ulong _HCL_m_valE = _HCL_M_valE;
     _HCL_m_valE &= 0xffffffffffffffff;
     if (showall) writefln("set m_valE to 0x%x",_HCL_m_valE);
     ulong _HCL_reg_inputM = _HCL_W_valM;
@@ -766,7 +773,7 @@ int tick(bool showpc=true, bool showall=false) {
     _HCL_f_stat &= 0x7;
     if (showall) writefln("set f_stat to 0x%x",_HCL_f_stat);
     ulong _HCL_offset = ((((((_HCL_f_icode)==(0)))||(((_HCL_f_icode)==(1))))||(((_HCL_f_icode)==(9)))) ? (1UL) :
-		((((((_HCL_f_icode)==(2)))||(((_HCL_f_icode)==(6))))||(((_HCL_f_icode)==(10))))||(((_HCL_f_icode)==(11)))) ? (2UL) :
+		(((((((_HCL_f_icode)==(2)))||(((_HCL_f_icode)==(6))))||(((_HCL_f_icode)==(10))))||(((_HCL_f_icode)==(11))))||(((_HCL_f_icode)==(2)))) ? (2UL) :
 		((((_HCL_f_icode)==(7)))||(((_HCL_f_icode)==(8)))) ? (9UL) :
 		(10UL));
     _HCL_offset &= 0xffffffffffffffff;
@@ -784,7 +791,9 @@ int tick(bool showpc=true, bool showall=false) {
     if (showall) writefln("set stall_F to %s",_HCL_stall_F);
     ulong _HCL_d_valA = (((_HCL_reg_srcA)==(15)) ? (0UL) :
 		((_HCL_reg_srcA)==(_HCL_e_dstE)) ? (_HCL_e_valE) :
+		((_HCL_reg_srcA)==(_HCL_m_dstE)) ? (_HCL_m_valE) :
 		((_HCL_reg_srcA)==(_HCL_m_dstM)) ? (_HCL_m_valM) :
+		((_HCL_reg_srcA)==(_HCL_W_dstE)) ? (_HCL_W_valE) :
 		((_HCL_reg_srcA)==(_HCL_W_dstM)) ? (_HCL_W_valM) :
 		(_HCL_reg_outputA));
     _HCL_d_valA &= 0xffffffffffffffff;
@@ -856,8 +865,8 @@ int tick(bool showpc=true, bool showall=false) {
 
 	return cast(int)_HCL_Stat;
 }
-pragma(msg,`Estimated clock delay: 55`);
-enum tpt = 55;
+pragma(msg,`Estimated clock delay: 57`);
+enum tpt = 57;
 
 import std.stdio, std.file, std.string, std.conv, std.algorithm;
 int main(string[] args) {
