@@ -45,14 +45,27 @@ wire mem_output:64;                   # value read from memory; linked to mem_re
 
 ####################### end builtin signals ###########################
 
+/* Neha Telhan (nt7ab) */
  # -*-sh-*- # this line enables partial syntax highlighting in emacs
 
 ######### The PC #############
-register xF { pc:64 = 0; }
+#register xF { pc:64 = 0; }
+register pP {
+    predPC:64 =0;
+}
 
+register cC {
+    SF:1 = 0;
+    ZF:1 = 0;
+}
 
 ########## Fetch #############
-pc = F_pc;
+pc = [
+    M_icode == JXX && !M_cond : M_valA;
+    M_icode == CALL && !M_cond : D_valC;
+    W_icode == RET : W_valM;
+    1: P_predPC;
+];
 
 #wire icode:4, rA:4, rB:4, valC:64;
 
@@ -62,7 +75,7 @@ f_rA = i10bytes[12..16];
 f_rB = i10bytes[8..12];
 
 f_valC = [
-     f_icode in { JXX } : i10bytes[8..72];
+     f_icode in { JXX, CALL } : i10bytes[8..72];
      1 : i10bytes[16..80];
 ];
 
@@ -79,9 +92,17 @@ offset = [
        f_icode in { JXX, CALL } : 9;
        1 : 10;
 ];
-f_valP = F_pc + offset;
+f_valP = pc + offset;
 
-x_pc = f_valP;
+p_predPC = [
+    f_stat != STAT_AOK : pc;
+    f_icode in {CALL, JXX} : f_valC;
+    1 : f_valP;
+];
+
+
+
+#x_pc = f_valP;
 
 #icode = f_icode;
 #rA = f_rA;
@@ -105,38 +126,53 @@ register fD {
 
 
 reg_srcA = [ # send to register file as read port; creates reg_outputA
-	 D_icode in {RMMOVQ} : D_rA;
+	 D_icode in {RMMOVQ, OPQ, PUSHQ, CMOVXX} : D_rA;
+	 D_icode in {POPQ, RET} : REG_RSP;
 	 1 : REG_NONE;
 ];
+
 reg_srcB = [ # send to register file as read port; creates reg_outputB
-	 D_icode in {RMMOVQ, MRMOVQ} : D_rB;
+	 D_icode in {RMMOVQ, MRMOVQ, IRMOVQ, RRMOVQ, OPQ, CMOVXX} : D_rB;
+	 D_icode in {PUSHQ, POPQ, CALL, RET} : REG_RSP;
 	 1 : REG_NONE;
 ];
 
 d_dstE = [
-       D_icode in {IRMOVQ, RRMOVQ} : D_rB;
+       D_icode in {IRMOVQ, RRMOVQ, OPQ, CMOVXX} : D_rB;
+       D_icode in {PUSHQ, POPQ, CALL, RET} : REG_RSP;
        1 : REG_NONE;
 ];
 
 d_dstM = [
-       D_icode in { MRMOVQ } : D_rA;
+       D_icode in { MRMOVQ, POPQ } : D_rA;
        1 : REG_NONE;
 ];
 
 d_valA = [
+       D_icode in {JXX, CALL} : D_valP;
        reg_srcA == REG_NONE: 0;
        reg_srcA == e_dstE : e_valE;
        reg_srcA == m_dstE : m_valE;
        reg_srcA == m_dstM : m_valM; # forward post-memory
        reg_srcA == W_dstE : W_valE;
        reg_srcA == W_dstM : W_valM; # forward pre-writeback
+       e_dstE == D_rA : e_valE;
+       M_dstE == D_rA : M_valE;
+       W_dstE == D_rA : W_valE;
        1 : reg_outputA; # returned by register file based on reg_srcA
 ];
+
 d_valB = [
        reg_srcB == REG_NONE: 0;
        # forward from another phase
+       reg_srcB == e_dstE : e_valE;
+       reg_srcB == m_dstE : m_valE;
+       reg_srcB == W_dstE : W_valE;
        reg_srcB == m_dstM : m_valM; # forward post-memory
        reg_srcB == W_dstM : W_valM; # forward pre-writeback
+       e_dstE == D_rB : e_valE;
+       M_dstE == D_rB : M_valE;
+       W_dstE == D_rB : W_valE;
        1 : reg_outputB; # returned by register file based on reg_srcA
 ];
 
@@ -149,7 +185,6 @@ d_valC = D_valC;
 
 
 ########## Execute #############
-
 register dE {
 	 stat:3 = STAT_BUB;
 	 icode:4 = NOP;
@@ -157,20 +192,48 @@ register dE {
 	 valC:64 = 0;
 	 valA:64 = 0;
 	 valB:64 = 0;
-	 dstM:4 = REG_NONE;
 	 dstE:4 = REG_NONE;
+	 dstM:4 = REG_NONE;
 }
+
+wire conditionsMet:1;
+conditionsMet = [
+    E_ifun == ALWAYS : TRUE;
+    E_ifun == LE : C_SF || C_ZF;
+    E_ifun == LT : C_SF;
+    E_ifun == EQ : C_ZF;
+    E_ifun == NE : !C_ZF;
+    E_ifun == GE : !C_SF;
+    E_ifun == GT : !C_SF && !C_ZF;
+    1 : FALSE;
+];
 
 
 e_valE = [
-       E_icode in { RMMOVQ, MRMOVQ } : E_valC + E_valB;
-       E_icode in { IRMOVQ} : E_valC;
-       E_icode in { RRMOVQ} : E_valA;
-       1 : 0;
+    E_icode == OPQ && E_ifun == XORQ : E_valA ^ E_valB;
+    E_icode == OPQ && E_ifun == ADDQ : E_valA + E_valB;
+    E_icode == OPQ && E_ifun == SUBQ : E_valB - E_valA;
+    E_icode == OPQ && E_ifun == ANDQ : E_valA & E_valB;
+    E_icode in { PUSHQ, CALL } : E_valB - 8;
+    E_icode in { POPQ, RET }   : E_valB + 8;
+    E_icode in { RMMOVQ, MRMOVQ } : E_valC + E_valB; #Given in lab solution...keep?
+    E_icode == IRMOVQ : E_valC;
+    E_icode == RRMOVQ : E_valA; 
+    E_icode == CMOVXX : 0 + E_valA;
+    1 : 0;
 ];
 
+#Do some accounting of Condition Codes
+c_ZF = e_valE == 0;
+c_SF = e_valE >= 0x8000000000000000;
+stall_C = E_icode != OPQ;
+
+e_cond = conditionsMet;
 e_stat =  E_stat;
-e_dstE = E_dstE;
+e_dstE = [
+    E_icode == CMOVXX && !conditionsMet : REG_NONE;
+    1 : E_dstE;
+];
 e_dstM = E_dstM;
 e_icode = E_icode;
 e_valA = E_valA;
@@ -182,17 +245,18 @@ register eM {
 	 icode:4 = NOP;
 	 valE:64 = 0;
 	 valA:64 = 0;
-	 dstM:4 = REG_NONE;
 	 dstE:4 = REG_NONE;
+	 dstM:4 = REG_NONE;
+	 cond:1 = 0;
 }
 
-
 mem_addr = [ # output to memory system
-	 M_icode in { RMMOVQ, MRMOVQ } : M_valE;
+	 M_icode in { RMMOVQ, MRMOVQ, CALL, PUSHQ } : M_valE;
+	 M_icode in {POPQ, RET} : M_valA;
 	 1 : 0; # Other instructions don't need address
 ];
-mem_readbit =  M_icode in { MRMOVQ }; # output to memory system
-mem_writebit = M_icode in { RMMOVQ }; # output to memory system
+mem_readbit =  M_icode in { MRMOVQ, PUSHQ, POPQ, RET }; # output to memory system
+mem_writebit = M_icode in { RMMOVQ, PUSHQ, CALL}; # output to memory system
 mem_input = M_valA;
 
 m_stat = M_stat;
@@ -208,33 +272,39 @@ register mW {
 	 icode:4 = NOP;
 	 valE:64 = 0;
 	 valM:64 = 0;
-	 dstM:4 = REG_NONE;
 	 dstE:4 = REG_NONE;
+	 dstM:4 = REG_NONE;
 }
+
+reg_inputE = W_valE;
+reg_dstE = [
+    D_icode in {PUSHQ, CALL, RET} : REG_RSP;
+    D_icode in {POPQ} : REG_RSP;
+    1 : W_dstE; #default to the writeback destE
+];
 
 reg_inputM = W_valM; # output: sent to register file
 reg_dstM = W_dstM; # output: sent to register file
-
-reg_inputE = W_valE;
-reg_dstE =W_dstE;
 
 Stat = W_stat; # output; halts execution and reports errors
 
 
 ################ Pipeline Register Control #########################
 
-wire loadUse:1;
-
+wire loadUse:1, branchmiss:1, stallret:1;
 loadUse = (E_icode in {MRMOVQ}) && (E_dstM in {reg_srcA, reg_srcB}); 
+branchmiss = (E_icode in {JXX}) && (!e_cond);
+stallret = (M_icode == RET || D_icode ==RET || E_icode == RET);
 
 ### Fetch
-stall_F = loadUse || f_stat != STAT_AOK;
+stall_P = (loadUse || f_stat != STAT_AOK || stallret);
 
 ### Decode
 stall_D = loadUse;
+bubble_D = branchmiss || stallret;
 
 ### Execute
-bubble_E = loadUse;
+bubble_E = loadUse || branchmiss;
 
 ### Memory
 
@@ -568,6 +638,20 @@ ulong _HCL_D_stat = 0;
 ulong _HCL_D_rB = 15;
 ulong _HCL_D_valC = 0;
 ulong _HCL_D_icode = 1;
+// register bank P:
+bool _HCL_bubble_P = false;
+bool _HCL_stall_P  = false;
+ulong _HCL_P_predPC = 0;
+// register bank M:
+bool _HCL_bubble_M = false;
+bool _HCL_stall_M  = false;
+ulong _HCL_M_dstM = 15;
+ulong _HCL_M_dstE = 15;
+ulong _HCL_M_stat = 0;
+ulong _HCL_M_valA = 0;
+ulong _HCL_M_valE = 0;
+ulong _HCL_M_cond = 0;
+ulong _HCL_M_icode = 1;
 // register bank W:
 bool _HCL_bubble_W = false;
 bool _HCL_stall_W  = false;
@@ -577,10 +661,6 @@ ulong _HCL_W_dstM = 15;
 ulong _HCL_W_valM = 0;
 ulong _HCL_W_valE = 0;
 ulong _HCL_W_dstE = 15;
-// register bank F:
-bool _HCL_bubble_F = false;
-bool _HCL_stall_F  = false;
-ulong _HCL_F_pc = 0;
 // register bank E:
 bool _HCL_bubble_E = false;
 bool _HCL_stall_E  = false;
@@ -592,15 +672,11 @@ ulong _HCL_E_stat = 0;
 ulong _HCL_E_valA = 0;
 ulong _HCL_E_valC = 0;
 ulong _HCL_E_icode = 1;
-// register bank M:
-bool _HCL_bubble_M = false;
-bool _HCL_stall_M  = false;
-ulong _HCL_M_stat = 0;
-ulong _HCL_M_icode = 1;
-ulong _HCL_M_dstM = 15;
-ulong _HCL_M_valA = 0;
-ulong _HCL_M_valE = 0;
-ulong _HCL_M_dstE = 15;
+// register bank C:
+bool _HCL_bubble_C = false;
+bool _HCL_stall_C  = false;
+ulong _HCL_C_ZF = 0;
+ulong _HCL_C_SF = 0;
 
 ////////////////////////// disassembler /////////////////////////////
 
@@ -634,22 +710,28 @@ string disas(ulonger i10bytes) {
 
 ////////////////////////// update cycle /////////////////////////////
 int tick(bool showpc=true, bool showall=false) {
-    ulong _HCL_pc = _HCL_F_pc;
+    ulong _HCL_pc = ((((_HCL_M_icode)==(7))&&(!_HCL_M_cond)) ? (_HCL_M_valA) :
+		(((_HCL_M_icode)==(8))&&(!_HCL_M_cond)) ? (_HCL_D_valC) :
+		((_HCL_W_icode)==(9)) ? (_HCL_W_valM) :
+		(_HCL_P_predPC));
     _HCL_pc &= 0xffffffffffffffff;
     if (showall) writefln("set pc to 0x%x",_HCL_pc);
-    ulong _HCL_reg_srcA = ((((_HCL_D_icode)==(4))) ? (_HCL_D_rA) :
+    ulong _HCL_reg_srcA = (((((((_HCL_D_icode)==(4)))||(((_HCL_D_icode)==(6))))||(((_HCL_D_icode)==(10))))||(((_HCL_D_icode)==(2)))) ? (_HCL_D_rA) :
+		((((_HCL_D_icode)==(11)))||(((_HCL_D_icode)==(9)))) ? (4) :
 		(15));
     _HCL_reg_srcA &= 0xf;
     if (showall) writefln("set reg_srcA to 0x%x",_HCL_reg_srcA);
-    ulong _HCL_reg_srcB = (((((_HCL_D_icode)==(4)))||(((_HCL_D_icode)==(5)))) ? (_HCL_D_rB) :
+    ulong _HCL_reg_srcB = (((((((((_HCL_D_icode)==(4)))||(((_HCL_D_icode)==(5))))||(((_HCL_D_icode)==(3))))||(((_HCL_D_icode)==(2))))||(((_HCL_D_icode)==(6))))||(((_HCL_D_icode)==(2)))) ? (_HCL_D_rB) :
+		((((((_HCL_D_icode)==(10)))||(((_HCL_D_icode)==(11))))||(((_HCL_D_icode)==(8))))||(((_HCL_D_icode)==(9)))) ? (4) :
 		(15));
     _HCL_reg_srcB &= 0xf;
     if (showall) writefln("set reg_srcB to 0x%x",_HCL_reg_srcB);
-    ulong _HCL_d_dstE = (((((_HCL_D_icode)==(3)))||(((_HCL_D_icode)==(2)))) ? (_HCL_D_rB) :
+    ulong _HCL_d_dstE = (((((((_HCL_D_icode)==(3)))||(((_HCL_D_icode)==(2))))||(((_HCL_D_icode)==(6))))||(((_HCL_D_icode)==(2)))) ? (_HCL_D_rB) :
+		((((((_HCL_D_icode)==(10)))||(((_HCL_D_icode)==(11))))||(((_HCL_D_icode)==(8))))||(((_HCL_D_icode)==(9)))) ? (4) :
 		(15));
     _HCL_d_dstE &= 0xf;
     if (showall) writefln("set d_dstE to 0x%x",_HCL_d_dstE);
-    ulong _HCL_d_dstM = ((((_HCL_D_icode)==(5))) ? (_HCL_D_rA) :
+    ulong _HCL_d_dstM = (((((_HCL_D_icode)==(5)))||(((_HCL_D_icode)==(11)))) ? (_HCL_D_rA) :
 		(15));
     _HCL_d_dstM &= 0xf;
     if (showall) writefln("set d_dstM to 0x%x",_HCL_d_dstM);
@@ -665,16 +747,45 @@ int tick(bool showpc=true, bool showall=false) {
     ulong _HCL_d_valC = _HCL_D_valC;
     _HCL_d_valC &= 0xffffffffffffffff;
     if (showall) writefln("set d_valC to 0x%x",_HCL_d_valC);
-    ulong _HCL_e_valE = (((((_HCL_E_icode)==(4)))||(((_HCL_E_icode)==(5)))) ? ((_HCL_E_valC)+(_HCL_E_valB)) :
-		(((_HCL_E_icode)==(3))) ? (_HCL_E_valC) :
-		(((_HCL_E_icode)==(2))) ? (_HCL_E_valA) :
+    ulong _HCL_conditionsMet = (((_HCL_E_ifun)==(0)) ? (1) :
+		((_HCL_E_ifun)==(1)) ? ((_HCL_C_SF)||(_HCL_C_ZF)) :
+		((_HCL_E_ifun)==(2)) ? (_HCL_C_SF) :
+		((_HCL_E_ifun)==(3)) ? (_HCL_C_ZF) :
+		((_HCL_E_ifun)==(4)) ? (!_HCL_C_ZF) :
+		((_HCL_E_ifun)==(5)) ? (!_HCL_C_SF) :
+		((_HCL_E_ifun)==(6)) ? ((!_HCL_C_SF)&&(!_HCL_C_ZF)) :
+		(0));
+    _HCL_conditionsMet &= 0x1;
+    if (showall) writefln("set conditionsMet to 0x%x",_HCL_conditionsMet);
+    ulong _HCL_e_valE = ((((_HCL_E_icode)==(6))&&((_HCL_E_ifun)==(3))) ? ((_HCL_E_valA)^(_HCL_E_valB)) :
+		(((_HCL_E_icode)==(6))&&((_HCL_E_ifun)==(0))) ? ((_HCL_E_valA)+(_HCL_E_valB)) :
+		(((_HCL_E_icode)==(6))&&((_HCL_E_ifun)==(1))) ? ((_HCL_E_valB)-(_HCL_E_valA)) :
+		(((_HCL_E_icode)==(6))&&((_HCL_E_ifun)==(2))) ? ((_HCL_E_valA)&(_HCL_E_valB)) :
+		((((_HCL_E_icode)==(10)))||(((_HCL_E_icode)==(8)))) ? ((_HCL_E_valB)-(8UL)) :
+		((((_HCL_E_icode)==(11)))||(((_HCL_E_icode)==(9)))) ? ((_HCL_E_valB)+(8UL)) :
+		((((_HCL_E_icode)==(4)))||(((_HCL_E_icode)==(5)))) ? ((_HCL_E_valC)+(_HCL_E_valB)) :
+		((_HCL_E_icode)==(3)) ? (_HCL_E_valC) :
+		((_HCL_E_icode)==(2)) ? (_HCL_E_valA) :
+		((_HCL_E_icode)==(2)) ? ((0UL)+(_HCL_E_valA)) :
 		(0UL));
     _HCL_e_valE &= 0xffffffffffffffff;
     if (showall) writefln("set e_valE to 0x%x",_HCL_e_valE);
+    ulong _HCL_c_ZF = (_HCL_e_valE)==(0UL);
+    _HCL_c_ZF &= 0x1;
+    if (showall) writefln("set c_ZF to 0x%x",_HCL_c_ZF);
+    ulong _HCL_c_SF = (_HCL_e_valE)>=(0x8000000000000000UL);
+    _HCL_c_SF &= 0x1;
+    if (showall) writefln("set c_SF to 0x%x",_HCL_c_SF);
+    _HCL_stall_C = cast(bool)((_HCL_E_icode)!=(6));
+    if (showall) writefln("set stall_C to %s",_HCL_stall_C);
+    ulong _HCL_e_cond = _HCL_conditionsMet;
+    _HCL_e_cond &= 0x1;
+    if (showall) writefln("set e_cond to 0x%x",_HCL_e_cond);
     ulong _HCL_e_stat = _HCL_E_stat;
     _HCL_e_stat &= 0x7;
     if (showall) writefln("set e_stat to 0x%x",_HCL_e_stat);
-    ulong _HCL_e_dstE = _HCL_E_dstE;
+    ulong _HCL_e_dstE = ((((_HCL_E_icode)==(2))&&(!_HCL_conditionsMet)) ? (15) :
+		(_HCL_E_dstE));
     _HCL_e_dstE &= 0xf;
     if (showall) writefln("set e_dstE to 0x%x",_HCL_e_dstE);
     ulong _HCL_e_dstM = _HCL_E_dstM;
@@ -686,14 +797,15 @@ int tick(bool showpc=true, bool showall=false) {
     ulong _HCL_e_valA = _HCL_E_valA;
     _HCL_e_valA &= 0xffffffffffffffff;
     if (showall) writefln("set e_valA to 0x%x",_HCL_e_valA);
-    ulong _HCL_mem_addr = (((((_HCL_M_icode)==(4)))||(((_HCL_M_icode)==(5)))) ? (_HCL_M_valE) :
+    ulong _HCL_mem_addr = (((((((_HCL_M_icode)==(4)))||(((_HCL_M_icode)==(5))))||(((_HCL_M_icode)==(8))))||(((_HCL_M_icode)==(10)))) ? (_HCL_M_valE) :
+		((((_HCL_M_icode)==(11)))||(((_HCL_M_icode)==(9)))) ? (_HCL_M_valA) :
 		(0UL));
     _HCL_mem_addr &= 0xffffffffffffffff;
     if (showall) writefln("set mem_addr to 0x%x",_HCL_mem_addr);
-    ulong _HCL_mem_readbit = ((_HCL_M_icode)==(5));
+    ulong _HCL_mem_readbit = (((((_HCL_M_icode)==(5)))||(((_HCL_M_icode)==(10))))||(((_HCL_M_icode)==(11))))||(((_HCL_M_icode)==(9)));
     _HCL_mem_readbit &= 0x1;
     if (showall) writefln("set mem_readbit to 0x%x",_HCL_mem_readbit);
-    ulong _HCL_mem_writebit = ((_HCL_M_icode)==(4));
+    ulong _HCL_mem_writebit = ((((_HCL_M_icode)==(4)))||(((_HCL_M_icode)==(10))))||(((_HCL_M_icode)==(8)));
     _HCL_mem_writebit &= 0x1;
     if (showall) writefln("set mem_writebit to 0x%x",_HCL_mem_writebit);
     ulong _HCL_mem_input = _HCL_M_valA;
@@ -714,27 +826,37 @@ int tick(bool showpc=true, bool showall=false) {
     ulong _HCL_m_valE = _HCL_M_valE;
     _HCL_m_valE &= 0xffffffffffffffff;
     if (showall) writefln("set m_valE to 0x%x",_HCL_m_valE);
+    ulong _HCL_reg_inputE = _HCL_W_valE;
+    _HCL_reg_inputE &= 0xffffffffffffffff;
+    if (showall) writefln("set reg_inputE to 0x%x",_HCL_reg_inputE);
+    ulong _HCL_reg_dstE = ((((((_HCL_D_icode)==(10)))||(((_HCL_D_icode)==(8))))||(((_HCL_D_icode)==(9)))) ? (4) :
+		(((_HCL_D_icode)==(11))) ? (4) :
+		(_HCL_W_dstE));
+    _HCL_reg_dstE &= 0xf;
+    if (showall) writefln("set reg_dstE to 0x%x",_HCL_reg_dstE);
     ulong _HCL_reg_inputM = _HCL_W_valM;
     _HCL_reg_inputM &= 0xffffffffffffffff;
     if (showall) writefln("set reg_inputM to 0x%x",_HCL_reg_inputM);
     ulong _HCL_reg_dstM = _HCL_W_dstM;
     _HCL_reg_dstM &= 0xf;
     if (showall) writefln("set reg_dstM to 0x%x",_HCL_reg_dstM);
-    ulong _HCL_reg_inputE = _HCL_W_valE;
-    _HCL_reg_inputE &= 0xffffffffffffffff;
-    if (showall) writefln("set reg_inputE to 0x%x",_HCL_reg_inputE);
-    ulong _HCL_reg_dstE = _HCL_W_dstE;
-    _HCL_reg_dstE &= 0xf;
-    if (showall) writefln("set reg_dstE to 0x%x",_HCL_reg_dstE);
     ulong _HCL_Stat = _HCL_W_stat;
     _HCL_Stat &= 0x7;
     if (showall) writefln("set Stat to 0x%x",_HCL_Stat);
     ulong _HCL_loadUse = ((((_HCL_E_icode)==(5))))&&(((((_HCL_E_dstM)==(_HCL_reg_srcA)))||(((_HCL_E_dstM)==(_HCL_reg_srcB)))));
     _HCL_loadUse &= 0x1;
     if (showall) writefln("set loadUse to 0x%x",_HCL_loadUse);
+    ulong _HCL_branchmiss = ((((_HCL_E_icode)==(7))))&&((!_HCL_e_cond));
+    _HCL_branchmiss &= 0x1;
+    if (showall) writefln("set branchmiss to 0x%x",_HCL_branchmiss);
+    ulong _HCL_stallret = ((((_HCL_M_icode)==(9))||((_HCL_D_icode)==(9)))||((_HCL_E_icode)==(9)));
+    _HCL_stallret &= 0x1;
+    if (showall) writefln("set stallret to 0x%x",_HCL_stallret);
     _HCL_stall_D = cast(bool)(_HCL_loadUse);
     if (showall) writefln("set stall_D to %s",_HCL_stall_D);
-    _HCL_bubble_E = cast(bool)(_HCL_loadUse);
+    _HCL_bubble_D = cast(bool)((_HCL_branchmiss)||(_HCL_stallret));
+    if (showall) writefln("set bubble_D to %s",_HCL_bubble_D);
+    _HCL_bubble_E = cast(bool)((_HCL_loadUse)||(_HCL_branchmiss));
     if (showall) writefln("set bubble_E to %s",_HCL_bubble_E);
     ulonger _HCL_i10bytes = __read_imem(_HCL_pc);
     if (showpc) writef(`pc = 0x%x; `, _HCL_pc);
@@ -763,7 +885,7 @@ int tick(bool showpc=true, bool showall=false) {
     ulong _HCL_f_rB = cast(ulong)(((_HCL_i10bytes)>>8UL)&0xf);
     _HCL_f_rB &= 0xf;
     if (showall) writefln("set f_rB to 0x%x",_HCL_f_rB);
-    ulong _HCL_f_valC = ((((_HCL_f_icode)==(7))) ? (cast(ulong)(((_HCL_i10bytes)>>8UL)&0xffffffffffffffff)) :
+    ulong _HCL_f_valC = (((((_HCL_f_icode)==(7)))||(((_HCL_f_icode)==(8)))) ? (cast(ulong)(((_HCL_i10bytes)>>8UL)&0xffffffffffffffff)) :
 		(cast(ulong)(((_HCL_i10bytes)>>16UL)&0xffffffffffffffff)));
     _HCL_f_valC &= 0xffffffffffffffff;
     if (showall) writefln("set f_valC to 0x%x",_HCL_f_valC);
@@ -778,29 +900,41 @@ int tick(bool showpc=true, bool showall=false) {
 		(10UL));
     _HCL_offset &= 0xffffffffffffffff;
     if (showall) writefln("set offset to 0x%x",_HCL_offset);
-    ulong _HCL_f_valP = (_HCL_F_pc)+(_HCL_offset);
+    ulong _HCL_f_valP = (_HCL_pc)+(_HCL_offset);
     _HCL_f_valP &= 0xffffffffffffffff;
     if (showall) writefln("set f_valP to 0x%x",_HCL_f_valP);
-    ulong _HCL_x_pc = _HCL_f_valP;
-    _HCL_x_pc &= 0xffffffffffffffff;
-    if (showall) writefln("set x_pc to 0x%x",_HCL_x_pc);
+    ulong _HCL_p_predPC = (((_HCL_f_stat)!=(1)) ? (_HCL_pc) :
+		((((_HCL_f_icode)==(8)))||(((_HCL_f_icode)==(7)))) ? (_HCL_f_valC) :
+		(_HCL_f_valP));
+    _HCL_p_predPC &= 0xffffffffffffffff;
+    if (showall) writefln("set p_predPC to 0x%x",_HCL_p_predPC);
     ulong _HCL_m_valM = _HCL_mem_output;
     _HCL_m_valM &= 0xffffffffffffffff;
     if (showall) writefln("set m_valM to 0x%x",_HCL_m_valM);
-    _HCL_stall_F = cast(bool)((_HCL_loadUse)||((_HCL_f_stat)!=(1)));
-    if (showall) writefln("set stall_F to %s",_HCL_stall_F);
-    ulong _HCL_d_valA = (((_HCL_reg_srcA)==(15)) ? (0UL) :
+    _HCL_stall_P = cast(bool)((((_HCL_loadUse)||((_HCL_f_stat)!=(1)))||(_HCL_stallret)));
+    if (showall) writefln("set stall_P to %s",_HCL_stall_P);
+    ulong _HCL_d_valA = (((((_HCL_D_icode)==(7)))||(((_HCL_D_icode)==(8)))) ? (_HCL_D_valP) :
+		((_HCL_reg_srcA)==(15)) ? (0UL) :
 		((_HCL_reg_srcA)==(_HCL_e_dstE)) ? (_HCL_e_valE) :
 		((_HCL_reg_srcA)==(_HCL_m_dstE)) ? (_HCL_m_valE) :
 		((_HCL_reg_srcA)==(_HCL_m_dstM)) ? (_HCL_m_valM) :
 		((_HCL_reg_srcA)==(_HCL_W_dstE)) ? (_HCL_W_valE) :
 		((_HCL_reg_srcA)==(_HCL_W_dstM)) ? (_HCL_W_valM) :
+		((_HCL_e_dstE)==(_HCL_D_rA)) ? (_HCL_e_valE) :
+		((_HCL_M_dstE)==(_HCL_D_rA)) ? (_HCL_M_valE) :
+		((_HCL_W_dstE)==(_HCL_D_rA)) ? (_HCL_W_valE) :
 		(_HCL_reg_outputA));
     _HCL_d_valA &= 0xffffffffffffffff;
     if (showall) writefln("set d_valA to 0x%x",_HCL_d_valA);
     ulong _HCL_d_valB = (((_HCL_reg_srcB)==(15)) ? (0UL) :
+		((_HCL_reg_srcB)==(_HCL_e_dstE)) ? (_HCL_e_valE) :
+		((_HCL_reg_srcB)==(_HCL_m_dstE)) ? (_HCL_m_valE) :
+		((_HCL_reg_srcB)==(_HCL_W_dstE)) ? (_HCL_W_valE) :
 		((_HCL_reg_srcB)==(_HCL_m_dstM)) ? (_HCL_m_valM) :
 		((_HCL_reg_srcB)==(_HCL_W_dstM)) ? (_HCL_W_valM) :
+		((_HCL_e_dstE)==(_HCL_D_rB)) ? (_HCL_e_valE) :
+		((_HCL_M_dstE)==(_HCL_D_rB)) ? (_HCL_M_valE) :
+		((_HCL_W_dstE)==(_HCL_D_rB)) ? (_HCL_W_valE) :
 		(_HCL_reg_outputB));
     _HCL_d_valB &= 0xffffffffffffffff;
     if (showall) writefln("set d_valB to 0x%x",_HCL_d_valB);
@@ -820,6 +954,22 @@ int tick(bool showpc=true, bool showall=false) {
     else if (!_HCL_stall_D) _HCL_D_valC = _HCL_f_valC;
     if (_HCL_bubble_D) _HCL_D_icode = 1;
     else if (!_HCL_stall_D) _HCL_D_icode = _HCL_f_icode;
+    if (_HCL_bubble_P) _HCL_P_predPC = 0;
+    else if (!_HCL_stall_P) _HCL_P_predPC = _HCL_p_predPC;
+    if (_HCL_bubble_M) _HCL_M_dstM = 15;
+    else if (!_HCL_stall_M) _HCL_M_dstM = _HCL_e_dstM;
+    if (_HCL_bubble_M) _HCL_M_dstE = 15;
+    else if (!_HCL_stall_M) _HCL_M_dstE = _HCL_e_dstE;
+    if (_HCL_bubble_M) _HCL_M_stat = 0;
+    else if (!_HCL_stall_M) _HCL_M_stat = _HCL_e_stat;
+    if (_HCL_bubble_M) _HCL_M_valA = 0;
+    else if (!_HCL_stall_M) _HCL_M_valA = _HCL_e_valA;
+    if (_HCL_bubble_M) _HCL_M_valE = 0;
+    else if (!_HCL_stall_M) _HCL_M_valE = _HCL_e_valE;
+    if (_HCL_bubble_M) _HCL_M_cond = 0;
+    else if (!_HCL_stall_M) _HCL_M_cond = _HCL_e_cond;
+    if (_HCL_bubble_M) _HCL_M_icode = 1;
+    else if (!_HCL_stall_M) _HCL_M_icode = _HCL_e_icode;
     if (_HCL_bubble_W) _HCL_W_stat = 0;
     else if (!_HCL_stall_W) _HCL_W_stat = _HCL_m_stat;
     if (_HCL_bubble_W) _HCL_W_icode = 1;
@@ -832,8 +982,6 @@ int tick(bool showpc=true, bool showall=false) {
     else if (!_HCL_stall_W) _HCL_W_valE = _HCL_m_valE;
     if (_HCL_bubble_W) _HCL_W_dstE = 15;
     else if (!_HCL_stall_W) _HCL_W_dstE = _HCL_m_dstE;
-    if (_HCL_bubble_F) _HCL_F_pc = 0;
-    else if (!_HCL_stall_F) _HCL_F_pc = _HCL_x_pc;
     if (_HCL_bubble_E) _HCL_E_valB = 0;
     else if (!_HCL_stall_E) _HCL_E_valB = _HCL_d_valB;
     if (_HCL_bubble_E) _HCL_E_ifun = 0;
@@ -850,23 +998,15 @@ int tick(bool showpc=true, bool showall=false) {
     else if (!_HCL_stall_E) _HCL_E_valC = _HCL_d_valC;
     if (_HCL_bubble_E) _HCL_E_icode = 1;
     else if (!_HCL_stall_E) _HCL_E_icode = _HCL_d_icode;
-    if (_HCL_bubble_M) _HCL_M_stat = 0;
-    else if (!_HCL_stall_M) _HCL_M_stat = _HCL_e_stat;
-    if (_HCL_bubble_M) _HCL_M_icode = 1;
-    else if (!_HCL_stall_M) _HCL_M_icode = _HCL_e_icode;
-    if (_HCL_bubble_M) _HCL_M_dstM = 15;
-    else if (!_HCL_stall_M) _HCL_M_dstM = _HCL_e_dstM;
-    if (_HCL_bubble_M) _HCL_M_valA = 0;
-    else if (!_HCL_stall_M) _HCL_M_valA = _HCL_e_valA;
-    if (_HCL_bubble_M) _HCL_M_valE = 0;
-    else if (!_HCL_stall_M) _HCL_M_valE = _HCL_e_valE;
-    if (_HCL_bubble_M) _HCL_M_dstE = 15;
-    else if (!_HCL_stall_M) _HCL_M_dstE = _HCL_e_dstE;
+    if (_HCL_bubble_C) _HCL_C_ZF = 0;
+    else if (!_HCL_stall_C) _HCL_C_ZF = _HCL_c_ZF;
+    if (_HCL_bubble_C) _HCL_C_SF = 0;
+    else if (!_HCL_stall_C) _HCL_C_SF = _HCL_c_SF;
 
 	return cast(int)_HCL_Stat;
 }
-pragma(msg,`Estimated clock delay: 57`);
-enum tpt = 57;
+pragma(msg,`Estimated clock delay: 68`);
+enum tpt = 68;
 
 import std.stdio, std.file, std.string, std.conv, std.algorithm;
 int main(string[] args) {
@@ -927,8 +1067,8 @@ int main(string[] args) {
         writefln("| R9:  % 16x   R10: % 16x   R11: % 16x |", __regfile[9], __regfile[10], __regfile[11]);
         writefln("| R12: % 16x   R13: % 16x   R14: % 16x |", __regfile[12], __regfile[13], __regfile[14]);
 
-	write(`| register xF(`,(_HCL_bubble_F?'B':_HCL_stall_F?'S':'N'));
-		writefln(`) { pc=%016x }                                |`, _HCL_F_pc);
+	write(`| register pP(`,(_HCL_bubble_P?'B':_HCL_stall_P?'S':'N'));
+		writefln(`) { predPC=%016x }                            |`, _HCL_P_predPC);
 
 
 	write(`| register fD(`,(_HCL_bubble_D?'B':_HCL_stall_D?'S':'N'));
@@ -942,13 +1082,17 @@ int main(string[] args) {
 
 
 	write(`| register eM(`,(_HCL_bubble_M?'B':_HCL_stall_M?'S':'N'));
-		writefln(`) { dstE=%01x dstM=%01x icode=%01x stat=%01x valA=%016x   |`, _HCL_M_dstE, _HCL_M_dstM, _HCL_M_icode, _HCL_M_stat, _HCL_M_valA);
-		writefln(`|  valE=%016x }                                              |`, _HCL_M_valE);
+		writefln(`) { cond=%01x dstE=%01x dstM=%01x icode=%01x stat=%01x                  |`, _HCL_M_cond, _HCL_M_dstE, _HCL_M_dstM, _HCL_M_icode, _HCL_M_stat);
+		writefln(`|  valA=%016x valE=%016x }                        |`, _HCL_M_valA, _HCL_M_valE);
 
 
 	write(`| register mW(`,(_HCL_bubble_W?'B':_HCL_stall_W?'S':'N'));
 		writefln(`) { dstE=%01x dstM=%01x icode=%01x stat=%01x valE=%016x   |`, _HCL_W_dstE, _HCL_W_dstM, _HCL_W_icode, _HCL_W_stat, _HCL_W_valE);
 		writefln(`|  valM=%016x }                                              |`, _HCL_W_valM);
+
+
+	write(`| register cC(`,(_HCL_bubble_C?'B':_HCL_stall_C?'S':'N'));
+		writefln(`) { SF=%01x ZF=%01x }                                          |`, _HCL_C_SF, _HCL_C_ZF);
 
         auto set = __memory.keys; sort(set);
         writeln("| used memory:   _0 _1 _2 _3  _4 _5 _6 _7   _8 _9 _a _b  _c _d _e _f    |");
